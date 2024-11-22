@@ -1,0 +1,10 @@
+{
+    "id": "obsidian-tamagotchi",
+    "name": "Tamagotchi Pet",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "A virtual pet that lives in your Obsidian vault and needs daily care.",
+    "author": "Your Name",
+    "isDesktopOnly": false,
+    "css": ["styles.css"]
+}
