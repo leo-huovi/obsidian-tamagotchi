@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, TFile, TAbstractFile, Modal, normalizePath } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, TFile, TFolder, TAbstractFile, Modal, normalizePath } from 'obsidian';
 import TamagotchiPlugin from './main';
 
 export interface TamagotchiSettings {
@@ -7,18 +7,8 @@ export interface TamagotchiSettings {
    jumpFrequency: number;
    hungerInterval: number;
    wordCountGoal: number;
-   imageSettings: {
-       happy: string;
-       hungry: string;
-       dead: string;
-       fed: string;
-       annoyed: string;
-       tripping: string;
-       kissing: string;
-       laugh: string;
-       heart: string;
-       background: string;
-   };
+   characterFolder: string;
+   backgroundImage: string;
 }
 
 export const DEFAULT_SETTINGS: TamagotchiSettings = {
@@ -27,18 +17,8 @@ export const DEFAULT_SETTINGS: TamagotchiSettings = {
    jumpFrequency: 0.002,
    hungerInterval: 12,
    wordCountGoal: 200,
-   imageSettings: {
-       happy: '',
-       hungry: '',
-       dead: '',
-       fed: '',
-       annoyed: '',
-       tripping: '',
-       kissing: '',
-       laugh: '',
-       heart: '',
-       background: ''
-   }
+   characterFolder: '',
+   backgroundImage: ''
 };
 
 export class TamagotchiSettingTab extends PluginSettingTab {
@@ -49,38 +29,20 @@ export class TamagotchiSettingTab extends PluginSettingTab {
         this.plugin = plugin;
     }
 
-    async createImageFileSetting(containerEl: HTMLElement, key: keyof TamagotchiSettings['imageSettings'], name: string, desc: string) {
-        let textComponent: any;
-        const setting = new Setting(containerEl)
-            .setName(name)
-            .setDesc(desc)
-            .addText(text => {
-                textComponent = text;
-                return text
-                    .setValue(this.plugin.settings.imageSettings[key])
-                    .setPlaceholder('Path to image in vault');
-            })
-            .addButton(button => button
-                .setButtonText('Choose')
-                .onClick(async () => {
-                    const modal = new ImageSelectorModal(this.app, async (file: TFile) => {
-                        const path = normalizePath(file.path);
-                        this.plugin.settings.imageSettings[key] = path;
-                        await this.plugin.saveSettings();
-                        textComponent.setValue(path);
-                        if (this.plugin.view) {
-                            this.plugin.view.updateVisuals();
-                        }
-                    });
-                    modal.open();
-                }));
-    }
-
     display(): void {
         const {containerEl} = this;
         containerEl.empty();
 
-        // Original settings
+        new Setting(containerEl)
+            .setName('Pet Name')
+            .setDesc('Name your pet')
+            .addText(text => text
+                .setValue(this.plugin.settings.petName)
+                .onChange(async (value) => {
+                    this.plugin.settings.petName = value;
+                    await this.plugin.saveSettings();
+                }));
+
         new Setting(containerEl)
             .setName('Word Count Goal')
             .setDesc('Words needed to feed pet')
@@ -92,24 +54,96 @@ export class TamagotchiSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
-        // Image settings section
-        containerEl.createEl('h2', {text: 'Pet Images'});
-        containerEl.createEl('p', {
-            text: 'Select images from your vault for different pet states. Images should be PNG or JPG format.'
-        });
+        new Setting(containerEl)
+            .setName('Character Folder')
+            .setDesc('Select folder containing character emotion images')
+            .addText(text => text
+                .setValue(this.plugin.settings.characterFolder)
+                .setPlaceholder('Path to character folder'))
+            .addButton(button => button
+                .setButtonText('Choose')
+                .onClick(() => {
+                    const modal = new FolderSelectorModal(this.app, async (folderPath: string) => {
+                        this.plugin.settings.characterFolder = folderPath;
+                        await this.plugin.saveSettings();
+                        await this.plugin.loadCharacterImages();
+                        if (this.plugin.view) {
+                            this.plugin.view.updateVisuals();
+                        }
+                    });
+                    modal.open();
+                }));
 
-        // Create settings for each image type
-        this.createImageFileSetting(containerEl, 'happy', 'Happy State Image', 'Image shown when pet is happy');
-        this.createImageFileSetting(containerEl, 'hungry', 'Hungry State Image', 'Image shown when pet is hungry');
-        this.createImageFileSetting(containerEl, 'dead', 'Dead State Image', 'Image shown when pet dies');
-        this.createImageFileSetting(containerEl, 'fed', 'Fed State Image', 'Image shown right after feeding');
-        this.createImageFileSetting(containerEl, 'annoyed', 'Annoyed State Image', 'Image shown when pet is annoyed');
-        this.createImageFileSetting(containerEl, 'tripping', 'Tripping State Image', 'Image shown when pet is tripping');
-        this.createImageFileSetting(containerEl, 'kissing', 'Kissing State Image', 'Image shown when pet is kissing');
-        this.createImageFileSetting(containerEl, 'laugh', 'Laughing State Image', 'Image shown when pet is laughing');
-        this.createImageFileSetting(containerEl, 'heart', 'Heart Image', 'Image used for score hearts');
-        this.createImageFileSetting(containerEl, 'background', 'Background Image', 'Background image for the pet container');
+        new Setting(containerEl)
+            .setName('Background Image')
+            .setDesc('Select background image')
+            .addText(text => text
+                .setValue(this.plugin.settings.backgroundImage)
+                .setPlaceholder('Path to background image'))
+            .addButton(button => button
+                .setButtonText('Choose')
+                .onClick(() => {
+                    const modal = new ImageSelectorModal(this.app, async (file: TFile) => {
+                        this.plugin.settings.backgroundImage = file.path;
+                        await this.plugin.saveSettings();
+                        if (this.plugin.view) {
+                            this.plugin.view.updateVisuals();
+                        }
+                    });
+                    modal.open();
+                }));
+    }
+}
 
+class FolderSelectorModal extends Modal {
+    onChoose: (folderPath: string) => void;
+
+    constructor(app: App, onChoose: (folderPath: string) => void) {
+        super(app);
+        this.onChoose = onChoose;
+    }
+
+    onOpen() {
+        const {contentEl} = this;
+        contentEl.empty();
+
+        contentEl.createEl('h2', {text: 'Choose Character Folder'});
+
+        const container = contentEl.createDiv();
+        container.style.maxHeight = '400px';
+        container.style.overflowY = 'auto';
+
+        const createFolderList = (folder: TFolder, level = 0) => {
+            const folderDiv = container.createDiv();
+            folderDiv.style.paddingLeft = `${level * 20}px`;
+            folderDiv.style.cursor = 'pointer';
+            folderDiv.style.padding = '5px';
+            folderDiv.style.borderRadius = '4px';
+            folderDiv.textContent = folder.name;
+
+            folderDiv.addEventListener('mouseover', () => {
+                folderDiv.style.backgroundColor = 'var(--background-modifier-hover)';
+            });
+            folderDiv.addEventListener('mouseout', () => {
+                folderDiv.style.backgroundColor = '';
+            });
+            folderDiv.addEventListener('click', () => {
+                this.onChoose(folder.path);
+                this.close();
+            });
+
+            folder.children
+                .filter(child => child instanceof TFolder)
+                .forEach(subfolder => createFolderList(subfolder as TFolder, level + 1));
+        };
+
+        const rootFolder = this.app.vault.getRoot();
+        createFolderList(rootFolder);
+    }
+
+    onClose() {
+        const {contentEl} = this;
+        contentEl.empty();
     }
 }
 

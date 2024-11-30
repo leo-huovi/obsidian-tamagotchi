@@ -5,6 +5,8 @@
     border-radius: 10px;
     overflow: hidden;
     background-color: var(--background-secondary); /* Fallback if image fails to load */
+    background-size: cover !important;
+    background-position: center !important;
 }
 
 .tamagotchi-pet {
@@ -14,7 +16,6 @@
     bottom: 20px;
     transition: transform 0.3s ease;
 }
-
 
 .tamagotchi-pet-img {
     width: 100%;
@@ -66,7 +67,6 @@
     background: var(--interactive-accent-hover);
 }
 
-
 .hearts-container {
     display: flex;
     flex-wrap: wrap;
@@ -87,8 +87,6 @@
     image-rendering: pixelated;
     display: block;
 }
-
-
 
 .progress-container {
    width: 100%;
@@ -119,7 +117,6 @@
     min-height: 20px;
     color: var(--text-muted);
 }
-
 
 .writing-progress.complete::-webkit-progress-value {
     background-color: var(--text-success);

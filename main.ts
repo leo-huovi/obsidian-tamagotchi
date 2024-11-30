@@ -1,7 +1,6 @@
-import { Plugin, FileStats, Vault, ItemView, WorkspaceLeaf, View, TFile, TAbstractFile, Modal } from 'obsidian';
+// main.ts
+import { Plugin, FileStats, Vault, ItemView, WorkspaceLeaf, View, TFile, TFolder, TAbstractFile, Modal } from 'obsidian';
 import { TamagotchiSettings, DEFAULT_SETTINGS, TamagotchiSettingTab } from './settings';
-
-
 
 const VIEW_TYPE = 'tamagotchi-view';
 
@@ -26,17 +25,42 @@ interface TamagotchiData {
    hungerLevel: number;
 }
 
+interface CharacterImages {
+    [key: string]: string;
+}
+
 export default class TamagotchiPlugin extends Plugin {
     data: TamagotchiData;
     view: TamagotchiView;
     settings: TamagotchiSettings;
     daily_stats: DailyStats;
+    characterImages: CharacterImages = {};
+
+    async loadCharacterImages() {
+        this.characterImages = {};
+        const folder = this.app.vault.getAbstractFileByPath(this.settings.characterFolder);
+
+        if (folder && folder instanceof TFolder) {
+            const files = folder.children
+                .filter(file =>
+                    file instanceof TFile &&
+                    ['png', 'jpg', 'jpeg'].includes(file.extension.toLowerCase())
+                ) as TFile[];
+
+            for (const file of files) {
+                const emotion = file.basename.toLowerCase();
+                this.characterImages[emotion] = file.path;
+            }
+        }
+    }
 
     async onload() {
         console.log('Loading Tamagotchi plugin');
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new TamagotchiSettingTab(this.app, this));
+
+        await this.loadCharacterImages();
 
         const savedData = await this.loadData();
         this.data = {
@@ -84,8 +108,7 @@ export default class TamagotchiPlugin extends Plugin {
         if (this.view) {
             this.view.updateVisuals();
         }
-    };
-
+    }
 
     async activateView() {
         const { workspace } = this.app;
@@ -103,8 +126,6 @@ export default class TamagotchiPlugin extends Plugin {
         workspace.revealLeaf(leaf);
     }
 
-
-
     getCurrentUTCHour(): number {
         return new Date().getUTCHours();
     }
@@ -115,9 +136,7 @@ export default class TamagotchiPlugin extends Plugin {
         const lastFedDay = lastFedDate.getUTCDate();
         const currentDay = new Date().getUTCDate();
 
-        // If it's past 8 UTC or 16 UTC, check if we've been fed today after that time
         if ((currentHour >= 8 && currentHour < 16) || currentHour >= 16) {
-            // If we're in a different day or fed before the current period
             if (currentDay > lastFedDay ||
                 (currentDay === lastFedDay && lastFedDate.getUTCHours() <
                     (currentHour >= 16 ? 16 : 8))) {
@@ -127,7 +146,6 @@ export default class TamagotchiPlugin extends Plugin {
 
         return false;
     }
-
 
     async updateDailyStats() {
         const today = new Date().toDateString();
@@ -158,34 +176,33 @@ export default class TamagotchiPlugin extends Plugin {
     }
 
     async checkPetStatus() {
-   if (this.data.isAlive) {
-       const hoursSinceLastFed = (Date.now() - this.data.lastFed) / (1000 * 60 * 60);
-       const hungerIncrements = Math.floor(hoursSinceLastFed / this.settings.hungerInterval);
+        if (this.data.isAlive) {
+            const hoursSinceLastFed = (Date.now() - this.data.lastFed) / (1000 * 60 * 60);
+            const hungerIncrements = Math.floor(hoursSinceLastFed / this.settings.hungerInterval);
 
-       if (hungerIncrements >= 1) {
-           this.data.hungerLevel = hungerIncrements;
-           this.data.currentMood = 'hungry';
+            if (hungerIncrements >= 1) {
+                this.data.hungerLevel = hungerIncrements;
+                this.data.currentMood = 'hungry';
 
-           if (hungerIncrements >= 2) {
-               this.data.isAlive = false;
-               this.data.currentMood = 'dead';
-           }
+                if (hungerIncrements >= 2) {
+                    this.data.isAlive = false;
+                    this.data.currentMood = 'dead';
+                }
 
-           await this.saveData(this.data);
-           if (this.view) {
-               this.view.updateVisuals();
-           }
-       }
-   }
-}
+                await this.saveData(this.data);
+                if (this.view) {
+                    this.view.updateVisuals();
+                }
+            }
+        }
+    }
 
-    // Add jump animation on feed
     async feedPet() {
         if (this.isHungry()) {
             this.data.lastFed = Date.now();
-            this.data.score++; // Only increment score on successful feed
+            this.data.score++;
             this.data.isJumping = true;
-            this.data.jumpEndTime = Date.now() + 5000; // 5 second jump duration
+            this.data.jumpEndTime = Date.now() + 5000;
             await this.saveData(this.data);
             if (this.view) {
                 this.view.updateVisuals();
@@ -201,7 +218,7 @@ export default class TamagotchiPlugin extends Plugin {
             name: this.settings.petName,
             score: 0,
             direction: 'right',
-            position: 125, // Center position
+            position: 125,
             isJumping: false,
             jumpEndTime: 0,
             currentMood: 'happy',
@@ -209,7 +226,6 @@ export default class TamagotchiPlugin extends Plugin {
             hungerLevel: 0
         };
 
-        // Reset daily stats
         this.daily_stats = {
             date: new Date().toDateString(),
             startCount: 0,
@@ -222,10 +238,7 @@ export default class TamagotchiPlugin extends Plugin {
             await this.view.reopenView();
         }
     }
-
 }
-
-
 
 class TamagotchiView extends ItemView {
     plugin: TamagotchiPlugin;
@@ -256,6 +269,26 @@ class TamagotchiView extends ItemView {
         return "heart";
     }
 
+    async getImagePath(emotion: string): Promise<string> {
+        const emotionKey = emotion.replace('tamagotchi_', '').replace('.png', '').toLowerCase();
+        const imagePath = this.plugin.characterImages[emotionKey];
+
+        if (!imagePath) {
+            console.warn(`No image found for ${emotionKey} state`);
+            return '';
+        }
+
+        try {
+            const file = this.app.vault.getAbstractFileByPath(imagePath);
+            if (file instanceof TFile) {
+                return this.app.vault.getResourcePath(file);
+            }
+        } catch (error) {
+            console.error('Error loading image:', error);
+        }
+        return '';
+    }
+
     updateScore() {
         if (!this.scoreEl) return;
 
@@ -268,7 +301,7 @@ class TamagotchiView extends ItemView {
                 cls: 'heart-img'
             });
 
-            const heartPath = this.plugin.settings.imageSettings.heart;
+            const heartPath = this.plugin.characterImages['heart'];
             if (heartPath) {
                 const file = this.app.vault.getAbstractFileByPath(heartPath);
                 if (file instanceof TFile) {
@@ -340,7 +373,7 @@ class TamagotchiView extends ItemView {
 
                 if (this.plugin.data.isJumping && now < this.plugin.data.jumpEndTime) {
                     const baseBottom = 20;
-                    const progress = (now - (this.plugin.data.jumpEndTime - 5000)) / 5000; // 0 to 1
+                    const progress = (now - (this.plugin.data.jumpEndTime - 5000)) / 5000;
                     const jumpHeight = Math.abs(Math.sin(progress * Math.PI * 6)) * 30;
                     this.petEl.style.bottom = `${baseBottom + jumpHeight}px`;
                 } else if (this.plugin.data.isJumping) {
@@ -381,34 +414,13 @@ class TamagotchiView extends ItemView {
         animate();
     }
 
-    async getImagePath(imageName: string): Promise<string> {
-        const imageSettings = this.plugin.settings.imageSettings;
-        const imageKey = imageName.replace('tamagotchi_', '').replace('.png', '') as keyof typeof imageSettings;
-        const imagePath = imageSettings[imageKey];
-
-        if (!imagePath) {
-            console.warn(`No image set for ${imageKey} state`);
-            return '';
-        }
-
-        try {
-            const file = this.app.vault.getAbstractFileByPath(imagePath);
-            if (file instanceof TFile) {
-                return this.app.vault.getResourcePath(file);
-            }
-        } catch (error) {
-            console.error('Error loading image:', error);
-        }
-        return '';
-    }
-
     async onOpen() {
         const container = this.containerEl.children[1];
         container.empty();
         container.addClass('tamagotchi-container');
 
         const petContainer = container.createDiv('tamagotchi-pet-container');
-        const backgroundPath = this.plugin.settings.imageSettings.background;
+        const backgroundPath = this.plugin.settings.backgroundImage;
         if (backgroundPath) {
             const file = this.app.vault.getAbstractFileByPath(backgroundPath);
             if (file instanceof TFile) {
@@ -419,7 +431,6 @@ class TamagotchiView extends ItemView {
             }
         }
 
-
         this.scoreEl = container.createDiv('hearts-container');
         this.updateScore();
 
@@ -428,7 +439,7 @@ class TamagotchiView extends ItemView {
             cls: 'tamagotchi-pet-img'
         });
 
-        const initialDataUrl = await this.getImagePath('tamagotchi_happy.png');
+        const initialDataUrl = await this.getImagePath('happy');
         if (initialDataUrl) {
             this.petImg.src = initialDataUrl;
         }
@@ -486,7 +497,6 @@ class TamagotchiView extends ItemView {
         );
 
         await updateProgress();
-
         this.startAnimation();
         await this.updateVisuals();
     }
@@ -498,7 +508,7 @@ class TamagotchiView extends ItemView {
     async updateVisuals() {
         if (!this.petImg || !this.statusEl) return;
 
-        let stateKey: keyof TamagotchiSettings['imageSettings'] = 'happy';
+        let stateKey = 'happy';
         let status = `${this.plugin.data.name} is happy 😊`;
 
         if (!this.plugin.data.isAlive) {
@@ -506,24 +516,20 @@ class TamagotchiView extends ItemView {
             status = `${this.plugin.data.name} is no longer with us 😢`;
         } else if (this.plugin.data.currentMood === 'hungry' || this.plugin.isHungry()) {
             stateKey = 'hungry';
+            status = `${this.plugin.data.name} is hungry 🍽`;
         } else if (Date.now() - this.plugin.data.lastFed < 5000) {
             stateKey = 'fed';
+            status = `${this.plugin.data.name} is eating 😋`;
             setTimeout(() => {
                 this.plugin.data.currentMood = 'happy';
                 this.updateVisuals();
             }, 5000);
         } else if (this.plugin.data.currentMood !== 'happy') {
-            // Validate that currentMood is a valid key
-            const isValidMood = (mood: string): mood is keyof TamagotchiSettings['imageSettings'] => {
-                return mood in this.plugin.settings.imageSettings;
-            };
-
-            if (isValidMood(this.plugin.data.currentMood)) {
-                stateKey = this.plugin.data.currentMood;
-            }
+            stateKey = this.plugin.data.currentMood;
+            status = `${this.plugin.data.name} is ${this.plugin.data.currentMood} 😊`;
         }
 
-        const imagePath = this.plugin.settings.imageSettings[stateKey];
+        const imagePath = this.plugin.characterImages[stateKey];
         if (imagePath) {
             const file = this.app.vault.getAbstractFileByPath(imagePath);
             if (file instanceof TFile) {
@@ -531,9 +537,9 @@ class TamagotchiView extends ItemView {
             }
         }
 
-        //if (this.statusEl instanceof HTMLElement) {
-        //    this.statusEl.textContent = status;
-        //}
+        if (this.statusEl instanceof HTMLElement) {
+            this.statusEl.textContent = status;
+        }
     }
 
     async onClose() {
