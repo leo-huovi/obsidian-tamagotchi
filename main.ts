@@ -36,23 +36,45 @@ export default class TamagotchiPlugin extends Plugin {
     daily_stats: DailyStats;
     characterImages: CharacterImages = {};
 
-    async loadCharacterImages() {
-        this.characterImages = {};
-        const folder = this.app.vault.getAbstractFileByPath(this.settings.characterFolder);
 
-        if (folder && folder instanceof TFolder) {
+    async loadCharacterImages() {
+        try {
+            this.characterImages = {};
+            console.log("Loading images from folder:", this.settings.characterFolder);
+
+            if (!this.settings.characterFolder) {
+                console.log("No character folder path set in settings");
+                return;
+            }
+
+            const folder = this.app.vault.getAbstractFileByPath(this.settings.characterFolder);
+            if (!folder) {
+                console.log("Could not find character folder");
+                return;
+            }
+
+            if (!(folder instanceof TFolder)) {
+                console.log("Path exists but is not a folder");
+                return;
+            }
+
             const files = folder.children
                 .filter(file =>
                     file instanceof TFile &&
                     ['png', 'jpg', 'jpeg'].includes(file.extension.toLowerCase())
                 ) as TFile[];
 
+            console.log("Found image files:", files.map(f => f.path));
+
             for (const file of files) {
                 const emotion = file.basename.toLowerCase();
                 this.characterImages[emotion] = file.path;
             }
+        } catch (error) {
+            console.error('Error loading character images:', error);
         }
     }
+
 
     async onload() {
         console.log('Loading Tamagotchi plugin');
@@ -60,7 +82,13 @@ export default class TamagotchiPlugin extends Plugin {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
         this.addSettingTab(new TamagotchiSettingTab(this.app, this));
 
+        // Wait for images to load before proceeding
         await this.loadCharacterImages();
+        if (Object.keys(this.characterImages).length === 0) {
+            console.error('No character images were loaded');
+            // Retry once
+            await this.loadCharacterImages();
+        }
 
         const savedData = await this.loadData();
         this.data = {
@@ -87,8 +115,16 @@ export default class TamagotchiPlugin extends Plugin {
 
         this.registerView(
             VIEW_TYPE,
-            (leaf) => (this.view = new TamagotchiView(leaf, this))
+            (leaf) => {
+                this.view = new TamagotchiView(leaf, this);
+                // If no images, trigger load but don't await
+                if (Object.keys(this.characterImages).length === 0) {
+                    this.loadCharacterImages();
+                }
+                return this.view;
+            }
         );
+
 
         this.addRibbonIcon('heart', 'Open Tamagotchi', () => {
             this.activateView();
@@ -154,7 +190,8 @@ export default class TamagotchiPlugin extends Plugin {
 
         for (const file of files) {
             const fileStats = file.stat;
-            if (fileStats.mtime > new Date(today).getTime()) {
+            const todayStart = new Date(today);  // Get start of today
+            if (fileStats.mtime > todayStart.getTime()) {
                 const content = await this.app.vault.cachedRead(file);
                 const wordCount = content.split(/\s+/).filter(word => word.length > 0).length;
                 todayTotal += wordCount;
@@ -162,6 +199,7 @@ export default class TamagotchiPlugin extends Plugin {
         }
 
         if (this.daily_stats.date !== today) {
+            // It's a new day, reset stats
             this.daily_stats = {
                 date: today,
                 startCount: todayTotal,
@@ -187,6 +225,11 @@ export default class TamagotchiPlugin extends Plugin {
                 if (hungerIncrements >= 2) {
                     this.data.isAlive = false;
                     this.data.currentMood = 'dead';
+
+                    // Immediately update the view when pet dies
+                    if (this.view) {
+                        await this.view.reopenView();
+                    }
                 }
 
                 await this.saveData(this.data);
@@ -196,6 +239,7 @@ export default class TamagotchiPlugin extends Plugin {
             }
         }
     }
+
 
     async feedPet() {
         if (this.isHungry()) {
@@ -239,7 +283,6 @@ export default class TamagotchiPlugin extends Plugin {
         }
     }
 }
-
 class TamagotchiView extends ItemView {
     plugin: TamagotchiPlugin;
     petEl: HTMLElement | null = null;
@@ -251,6 +294,7 @@ class TamagotchiView extends ItemView {
     pauseDuration: number = 0;
     lastMoodCheck: number = 0;
     lastJumpCheck: number = 0;
+    baseWordCount: number = 0;
 
     constructor(leaf: WorkspaceLeaf, plugin: TamagotchiPlugin) {
         super(leaf);
@@ -270,15 +314,27 @@ class TamagotchiView extends ItemView {
     }
 
     async getImagePath(emotion: string): Promise<string> {
-        const emotionKey = emotion.replace('tamagotchi_', '').replace('.png', '').toLowerCase();
-        const imagePath = this.plugin.characterImages[emotionKey];
-
-        if (!imagePath) {
-            console.warn(`No image found for ${emotionKey} state`);
-            return '';
-        }
-
         try {
+            const emotionKey = emotion.replace('tamagotchi_', '').replace('.png', '').toLowerCase();
+            let imagePath = this.plugin.characterImages[emotionKey];
+
+            if (!imagePath) {
+                console.warn(`No image found for ${emotionKey} state`);
+
+                if (this.plugin.data.isAlive === false) {
+                    imagePath = this.plugin.characterImages['dead'] ||
+                            Object.values(this.plugin.characterImages)[0];
+                } else {
+                    imagePath = this.plugin.characterImages['happy'] ||
+                            Object.values(this.plugin.characterImages)[0];
+                }
+
+                if (!imagePath) {
+                    console.error('No fallback images available');
+                    return '';
+                }
+            }
+
             const file = this.app.vault.getAbstractFileByPath(imagePath);
             if (file instanceof TFile) {
                 return this.app.vault.getResourcePath(file);
@@ -415,6 +471,10 @@ class TamagotchiView extends ItemView {
     }
 
     async onOpen() {
+        if (Object.keys(this.plugin.characterImages).length === 0) {
+            await this.plugin.loadCharacterImages();
+        }
+
         const container = this.containerEl.children[1];
         container.empty();
         container.addClass('tamagotchi-container');
@@ -439,17 +499,13 @@ class TamagotchiView extends ItemView {
             cls: 'tamagotchi-pet-img'
         });
 
-        const initialDataUrl = await this.getImagePath('happy');
+        const initialState = !this.plugin.data.isAlive ? 'dead' : 'happy';
+        const initialDataUrl = await this.getImagePath(initialState);
         if (initialDataUrl) {
             this.petImg.src = initialDataUrl;
         }
 
-        this.statusEl = container.createDiv('tamagotchi-status');
-
         const controls = container.createDiv('tamagotchi-controls');
-        const feedButton = controls.createEl('button', { text: 'Feed' });
-        feedButton.onclick = () => this.plugin.feedPet();
-
         if (!this.plugin.data.isAlive) {
             const restartButton = controls.createEl('button', { text: 'Restart' });
             restartButton.onclick = () => this.plugin.resetPet();
@@ -463,37 +519,47 @@ class TamagotchiView extends ItemView {
         progressBar.style.width = '100%';
         const progressLabel = progressContainer.createDiv('progress-label');
 
-        let baseWordCount = 0;
         const updateProgress = async () => {
             const activeFile = this.app.workspace.getActiveFile();
             if (activeFile) {
                 if (this.plugin.isHungry()) {
                     const dailyWords = await this.plugin.updateDailyStats();
-                    if (!baseWordCount) baseWordCount = dailyWords;
-                    const progress = Math.min(dailyWords - baseWordCount, this.plugin.settings.wordCountGoal);
+
+                    // Set initial word count when we first start tracking
+                    if (this.baseWordCount === 0) {
+                        this.baseWordCount = dailyWords;
+                    }
+
+                    const progress = Math.max(0, dailyWords - this.baseWordCount);
                     progressBar.value = progress;
                     progressBar.classList.remove('complete');
                     progressLabel.textContent = `${progress}/${this.plugin.settings.wordCountGoal} words`;
 
                     if (progress >= this.plugin.settings.wordCountGoal) {
                         await this.plugin.feedPet();
-                        baseWordCount = 0;
+                        this.baseWordCount = dailyWords; // Reset base after feeding
                         progressBar.classList.add('complete');
                         progressLabel.textContent = "Tamagotchi has been fed!";
                         setTimeout(() => {
-                            progressLabel.textContent = `${Math.max(0, this.plugin.settings.wordCountGoal)}/${this.plugin.settings.wordCountGoal} words`;
+                            progressLabel.textContent = `0/${this.plugin.settings.wordCountGoal} words`;
+                            progressBar.value = 0;
+                            progressBar.classList.remove('complete');
                         }, 5000);
                     }
                 } else {
-                    progressBar.value = this.plugin.settings.wordCountGoal;
-                    progressBar.classList.add('complete');
-                    progressLabel.textContent = `${this.plugin.settings.wordCountGoal}/${this.plugin.settings.wordCountGoal} words`;
+                    progressBar.value = 0;
+                    progressBar.classList.remove('complete');
+                    progressLabel.textContent = `0/${this.plugin.settings.wordCountGoal} words`;
                 }
             }
         };
 
+        // Register for both editor changes and file changes
         this.registerEvent(
             this.app.workspace.on("editor-change", updateProgress)
+        );
+        this.registerEvent(
+            this.app.vault.on("modify", updateProgress)
         );
 
         await updateProgress();
@@ -508,37 +574,40 @@ class TamagotchiView extends ItemView {
     async updateVisuals() {
         if (!this.petImg || !this.statusEl) return;
 
-        let stateKey = 'happy';
-        let status = `${this.plugin.data.name} is happy 😊`;
+        try {
+            let stateKey = 'happy';
+            let status = `${this.plugin.data.name} is happy 😊`;
 
-        if (!this.plugin.data.isAlive) {
-            stateKey = 'dead';
-            status = `${this.plugin.data.name} is no longer with us 😢`;
-        } else if (this.plugin.data.currentMood === 'hungry' || this.plugin.isHungry()) {
-            stateKey = 'hungry';
-            status = `${this.plugin.data.name} is hungry 🍽`;
-        } else if (Date.now() - this.plugin.data.lastFed < 5000) {
-            stateKey = 'fed';
-            status = `${this.plugin.data.name} is eating 😋`;
-            setTimeout(() => {
-                this.plugin.data.currentMood = 'happy';
-                this.updateVisuals();
-            }, 5000);
-        } else if (this.plugin.data.currentMood !== 'happy') {
-            stateKey = this.plugin.data.currentMood;
-            status = `${this.plugin.data.name} is ${this.plugin.data.currentMood} 😊`;
-        }
-
-        const imagePath = this.plugin.characterImages[stateKey];
-        if (imagePath) {
-            const file = this.app.vault.getAbstractFileByPath(imagePath);
-            if (file instanceof TFile) {
-                this.petImg.src = this.app.vault.getResourcePath(file);
+            if (!this.plugin.data.isAlive) {
+                stateKey = 'dead';
+                status = `${this.plugin.data.name} is no longer with us 😢`;
+            } else if (this.plugin.data.currentMood === 'hungry' || this.plugin.isHungry()) {
+                stateKey = 'hungry';
+                status = `${this.plugin.data.name} is hungry 🍽`;
+            } else if (Date.now() - this.plugin.data.lastFed < 5000) {
+                stateKey = 'fed';
+                status = `${this.plugin.data.name} is eating 😋`;
+                setTimeout(() => {
+                    if (this.plugin.data.isAlive) {
+                        this.plugin.data.currentMood = 'happy';
+                        this.updateVisuals();
+                    }
+                }, 5000);
+            } else if (this.plugin.data.currentMood !== 'happy') {
+                stateKey = this.plugin.data.currentMood;
+                status = `${this.plugin.data.name} is ${this.plugin.data.currentMood} 😊`;
             }
-        }
 
-        if (this.statusEl instanceof HTMLElement) {
-            this.statusEl.textContent = status;
+            const imagePath = await this.getImagePath(stateKey);
+            if (imagePath) {
+                this.petImg.src = imagePath;
+            }
+
+            if (this.statusEl instanceof HTMLElement) {
+                this.statusEl.textContent = status;
+            }
+        } catch (error) {
+            console.error('Error updating visuals:', error);
         }
     }
 
