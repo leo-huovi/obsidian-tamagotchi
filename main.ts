@@ -283,6 +283,7 @@ export default class TamagotchiPlugin extends Plugin {
         }
     }
 }
+
 class TamagotchiView extends ItemView {
     plugin: TamagotchiPlugin;
     petEl: HTMLElement | null = null;
@@ -295,6 +296,8 @@ class TamagotchiView extends ItemView {
     lastMoodCheck: number = 0;
     lastJumpCheck: number = 0;
     baseWordCount: number = 0;
+    progressBar: HTMLProgressElement | null = null;
+    progressLabel: HTMLElement | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: TamagotchiPlugin) {
         super(leaf);
@@ -499,6 +502,9 @@ class TamagotchiView extends ItemView {
             cls: 'tamagotchi-pet-img'
         });
 
+        // Add status element
+        // this.statusEl = container.createDiv('tamagotchi-status');
+
         const initialState = !this.plugin.data.isAlive ? 'dead' : 'happy';
         const initialDataUrl = await this.getImagePath(initialState);
         if (initialDataUrl) {
@@ -512,49 +518,71 @@ class TamagotchiView extends ItemView {
         }
 
         const progressContainer = container.createDiv('progress-container');
-        const progressBar = progressContainer.createEl('progress', {
+        this.progressBar = progressContainer.createEl('progress', {
             cls: 'writing-progress',
             attr: { max: this.plugin.settings.wordCountGoal, value: '0' }
         });
-        progressBar.style.width = '100%';
-        const progressLabel = progressContainer.createDiv('progress-label');
+        this.progressBar.style.width = '100%';
+        this.progressLabel = progressContainer.createDiv('progress-label');
+
+        // Initialize base word count
+        const initialWords = await this.plugin.updateDailyStats();
+        this.baseWordCount = initialWords;
 
         const updateProgress = async () => {
-            const activeFile = this.app.workspace.getActiveFile();
-            if (activeFile) {
-                if (this.plugin.isHungry()) {
+            if (!this.progressBar || !this.progressLabel) return;
+
+            try {
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile) {
                     const dailyWords = await this.plugin.updateDailyStats();
-
-                    // Set initial word count when we first start tracking
-                    if (this.baseWordCount === 0) {
-                        this.baseWordCount = dailyWords;
-                    }
-
                     const progress = Math.max(0, dailyWords - this.baseWordCount);
-                    progressBar.value = progress;
-                    progressBar.classList.remove('complete');
-                    progressLabel.textContent = `${progress}/${this.plugin.settings.wordCountGoal} words`;
 
-                    if (progress >= this.plugin.settings.wordCountGoal) {
+                    console.log('Current progress:', {
+                        dailyWords,
+                        baseWordCount: this.baseWordCount,
+                        progress
+                    });
+
+                    this.progressBar.value = progress;
+                    this.progressBar.classList.remove('complete');
+                    this.progressLabel.textContent = `${progress}/${this.plugin.settings.wordCountGoal} words`;
+
+                    if (progress >= this.plugin.settings.wordCountGoal && this.plugin.isHungry()) {
                         await this.plugin.feedPet();
                         this.baseWordCount = dailyWords; // Reset base after feeding
-                        progressBar.classList.add('complete');
-                        progressLabel.textContent = "Tamagotchi has been fed!";
-                        setTimeout(() => {
-                            progressLabel.textContent = `0/${this.plugin.settings.wordCountGoal} words`;
-                            progressBar.value = 0;
-                            progressBar.classList.remove('complete');
+                        this.progressBar.classList.add('complete');
+                        this.progressLabel.textContent = "Tamagotchi has been fed!";
+
+                        // Update pet's mood immediately
+                        this.plugin.data.currentMood = 'fed';
+                        await this.updateVisuals();
+
+                        setTimeout(async () => {
+                            if (this.progressBar && this.progressLabel) {
+                                this.progressLabel.textContent = `0/${this.plugin.settings.wordCountGoal} words`;
+                                this.progressBar.value = 0;
+                                this.progressBar.classList.remove('complete');
+                            }
+                            if (this.plugin.data.isAlive) {
+                                this.plugin.data.currentMood = 'happy';
+                                await this.updateVisuals();
+                            }
                         }, 5000);
                     }
-                } else {
-                    progressBar.value = 0;
-                    progressBar.classList.remove('complete');
-                    progressLabel.textContent = `0/${this.plugin.settings.wordCountGoal} words`;
                 }
+            } catch (error) {
+                console.error('Error updating progress:', error);
             }
         };
 
-        // Register for both editor changes and file changes
+        // Register events for updates
+        this.registerInterval(
+            window.setInterval(() => {
+                this.updateVisuals();
+            }, 1000)
+        );
+
         this.registerEvent(
             this.app.workspace.on("editor-change", updateProgress)
         );
@@ -584,16 +612,10 @@ class TamagotchiView extends ItemView {
             } else if (this.plugin.data.currentMood === 'hungry' || this.plugin.isHungry()) {
                 stateKey = 'hungry';
                 status = `${this.plugin.data.name} is hungry 🍽`;
-            } else if (Date.now() - this.plugin.data.lastFed < 5000) {
+            } else if (this.plugin.data.currentMood === 'fed') {
                 stateKey = 'fed';
                 status = `${this.plugin.data.name} is eating 😋`;
-                setTimeout(() => {
-                    if (this.plugin.data.isAlive) {
-                        this.plugin.data.currentMood = 'happy';
-                        this.updateVisuals();
-                    }
-                }, 5000);
-            } else if (this.plugin.data.currentMood !== 'happy') {
+            } else {
                 stateKey = this.plugin.data.currentMood;
                 status = `${this.plugin.data.name} is ${this.plugin.data.currentMood} 😊`;
             }
@@ -603,9 +625,7 @@ class TamagotchiView extends ItemView {
                 this.petImg.src = imagePath;
             }
 
-            if (this.statusEl instanceof HTMLElement) {
-                this.statusEl.textContent = status;
-            }
+            this.statusEl.textContent = status;
         } catch (error) {
             console.error('Error updating visuals:', error);
         }
